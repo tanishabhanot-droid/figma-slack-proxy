@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Figma Slack Proxy</title>
+</head>
+<body>
+<script>
+  // This page is hosted on GitHub Pages and acts as a proxy for Slack API calls.
+  // It receives instructions from the Figma plugin via postMessage, calls Slack, and
+  // sends the result back.
+
+  window.addEventListener("message", async function(event) {
+    var msg = event.data;
+    if (!msg || msg.type !== "send-to-slack") return;
+
+    var token     = msg.token;
+    var channelId = msg.channelId;
+    var bytes     = new Uint8Array(msg.imageBytes);
+    var frameName = msg.frameName || "Figma Frame";
+    var text      = msg.message  || "";
+    var fileName  = frameName + ".png";
+    var fileSize  = bytes.length;
+
+    try {
+      // STEP 1: Get upload URL
+      var r1 = await fetch(
+        "https://slack.com/api/files.getUploadURLExternal?filename=" +
+        encodeURIComponent(fileName) + "&length=" + fileSize,
+        { headers: { "Authorization": "Bearer " + token } }
+      );
+      var j1 = await r1.json();
+      if (!j1.ok) {
+        window.parent.postMessage({ type: "slack-error", error: j1.error }, "*");
+        return;
+      }
+
+      // STEP 2: Upload image
+      var r2 = await fetch(j1.upload_url, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes
+      });
+      if (!r2.ok) {
+        window.parent.postMessage({ type: "upload-failed", status: r2.status }, "*");
+        return;
+      }
+
+      // STEP 3: Complete upload + post to channel
+      var r3 = await fetch("https://slack.com/api/files.completeUploadExternal", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + token,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          files: [{ id: j1.file_id, title: frameName }],
+          channel_id: channelId,
+          initial_comment: text
+        })
+      });
+      var j3 = await r3.json();
+
+      if (j3.ok) {
+        window.parent.postMessage({ type: "send-success" }, "*");
+      } else {
+        window.parent.postMessage({ type: "slack-error", error: j3.error }, "*");
+      }
+
+    } catch(err) {
+      window.parent.postMessage({ type: "proxy-error", detail: err.message }, "*");
+    }
+  });
+
+  // Tell the plugin the proxy is ready
+  window.parent.postMessage({ type: "proxy-ready" }, "*");
+</script>
+</body>
+</html>
